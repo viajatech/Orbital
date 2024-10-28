@@ -21,8 +21,8 @@ Excentricidad: Indica qué tan circular o elíptica es la órbita.
 Optimización y Rendimiento:
 Uso de Hilos (Threads): El cálculo de posiciones se realiza en un hilo separado para evitar bloqueos en la interfaz.
 Renderización Eficiente: Utiliza técnicas de renderización en GPU a través de VisPy para mantener un rendimiento óptimo al visualizar múltiples satélites.
-Objetivo del script:
 
+Objetivo del script:
 Proporcionar una herramienta educativa e interactiva que permita a los usuarios explorar y entender las órbitas de los satélites alrededor de la Tierra. Es útil para estudiantes, entusiastas de la astronomía y profesionales que deseen visualizar y analizar datos orbitales de manera dinámica y accesible.
 
 -----
