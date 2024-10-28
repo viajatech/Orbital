@@ -1,0 +1,265 @@
+#by David Ruiz (@viajatech)
+#Recuerda dale like a este repositorio si lo usas, gracias! 
+
+#instala las dependencias antes!!!
+#pip install requests sgp4 skyfield PyQt6 vispy numpy
+
+
+import sys
+import requests
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QVBoxLayout, QWidget,
+    QLineEdit, QListWidget, QMessageBox
+)
+from PyQt6.QtCore import QTimer, Qt, QThread, pyqtSignal
+from vispy import scene
+from vispy.scene import visuals
+from skyfield.api import EarthSatellite, load, wgs84
+from math import radians, cos, sin
+import numpy as np
+
+class SatelliteWorker(QThread):
+    update_positions = pyqtSignal(np.ndarray)
+
+    def __init__(self, satellites):
+        super().__init__()
+        self.satellites = satellites
+        self.running = True
+
+    def run(self):
+        ts = load.timescale()
+        while self.running:
+            time = ts.now()
+            positions = []
+
+            for sat in self.satellites:
+                try:
+                    geocentric = sat.at(time)
+                    subpoint = wgs84.subpoint(geocentric)
+                    latitude = subpoint.latitude.degrees
+                    longitude = subpoint.longitude.degrees
+                    elevation = subpoint.elevation.km
+
+                    # Convertir coordenadas geodésicas a cartesianas
+                    x, y, z = self.geodetic_to_ecef(latitude, longitude, elevation)
+                    positions.append((x, y, z))
+                except Exception as e:
+                    print(f"Error al actualizar la posición del satélite {sat.name}: {e}")
+                    positions.append((0, 0, 0))  # Posición por defecto en caso de error
+
+            positions_array = np.array(positions, dtype=np.float32)
+            self.update_positions.emit(positions_array)
+            self.msleep(1000)  # Esperar 1 segundo
+
+    def stop(self):
+        self.running = False
+
+    def geodetic_to_ecef(self, lat, lon, alt):
+        # Convertir grados a radianes
+        lat = radians(lat)
+        lon = radians(lon)
+
+        # Radio de la Tierra en el ecuador y aplanamiento
+        a = 6378.137  # km
+        f = 1 / 298.257223563
+
+        # Cálculos intermedios
+        e2 = f * (2 - f)
+        N = a / (1 - e2 * (sin(lat) ** 2)) ** 0.5
+
+        # Coordenadas ECEF
+        x = (N + alt) * cos(lat) * cos(lon)
+        y = (N + alt) * cos(lat) * sin(lon)
+        z = ((1 - e2) * N + alt) * sin(lat)
+
+        return x, y, z
+
+class OrbitalApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Orbital by Viaja Tech')
+        self.setGeometry(100, 100, 1200, 800)
+        self.satellites = []
+        self.selected_satellite = None
+        self.sat_positions = None
+        self.initUI()
+        self.load_tle_data()
+        self.start_satellite_worker()
+
+    def initUI(self):
+        central_widget = QWidget()
+        main_layout = QVBoxLayout(central_widget)
+
+        # Barra de búsqueda y filtrado
+        search_layout = QVBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Buscar satélite...")
+        self.search_input.textChanged.connect(self.search_satellite)
+        search_layout.addWidget(self.search_input)
+        main_layout.addLayout(search_layout)
+
+        # Lista de satélites
+        self.satellite_list = QListWidget()
+        self.satellite_list.itemClicked.connect(self.select_satellite_from_list)
+        main_layout.addWidget(self.satellite_list)
+
+        # Crear el canvas de VisPy
+        self.canvas = scene.SceneCanvas(keys='interactive', show=True, bgcolor='black')
+        main_layout.addWidget(self.canvas.native)
+        self.view = self.canvas.central_widget.add_view()
+
+        # Añadir la Tierra sin textura
+        self.earth = visuals.Sphere(radius=6371, method='latitude', subdivisions=64, parent=self.view.scene)
+        self.earth.transform = scene.transforms.STTransform(translate=(0, 0, 0))
+
+        # Aplicar un color sólido a la Tierra
+        self.earth.mesh.set_data(color=(0.2, 0.4, 1, 1))  # Color azul
+
+        # Crear objeto de marcadores para satélites
+        self.sat_marker = visuals.Markers(parent=self.view.scene)
+        self.sat_marker.set_data(np.zeros((1, 3), dtype=np.float32), face_color=(1, 0, 0, 1), size=5)
+
+        # Configurar la cámara
+        self.view.camera = scene.TurntableCamera(fov=60, distance=20000)
+        self.view.camera.azimuth = 0
+        self.view.camera.elevation = 30
+
+        self.setCentralWidget(central_widget)
+
+        # Eventos de mouse
+        self.canvas.events.mouse_press.connect(self.on_mouse_click)
+
+    def load_tle_data(self):
+        # Descargar datos TLE desde Celestrak
+        url = 'https://celestrak.com/NORAD/elements/gp.php?GROUP=active&FORMAT=tle'
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            tle_data = response.text
+        except requests.exceptions.RequestException as e:
+            QMessageBox.critical(self, "Error", f"No se pudieron descargar los datos TLE:\n{e}")
+            sys.exit(1)
+
+        # Procesar los datos TLE
+        def parse_tle(tle_str):
+            lines = tle_str.strip().split('\n')
+            sats = []
+            for i in range(0, len(lines), 3):
+                if i + 2 < len(lines):
+                    name = lines[i].strip()
+                    line1 = lines[i + 1].strip()
+                    line2 = lines[i + 2].strip()
+                    sats.append((name, line1, line2))
+            return sats
+
+        tle_list = parse_tle(tle_data)
+
+        # Crear objetos de satélite de Skyfield
+        ts = load.timescale()
+        self.satellites = []
+        for name, line1, line2 in tle_list:
+            try:
+                satellite = EarthSatellite(line1, line2, name, ts)
+                self.satellites.append(satellite)
+                self.satellite_list.addItem(name)
+            except Exception as e:
+                print(f"Error al crear el satélite {name}: {e}")
+
+    def start_satellite_worker(self):
+        self.worker = SatelliteWorker(self.satellites)
+        self.worker.update_positions.connect(self.update_satellite_positions)
+        self.worker.start()
+
+    def update_satellite_positions(self, positions):
+        self.sat_positions = positions
+
+        # Actualizar los datos de los marcadores
+        self.sat_marker.set_data(positions, face_color=(1, 0, 0, 1), size=5)
+
+        # Si hay un satélite seleccionado, destacar su marcador
+        if self.selected_satellite is not None:
+            index = self.satellites.index(self.selected_satellite)
+            colors = np.tile((1, 0, 0, 1), (len(self.satellites), 1))
+            colors[index] = (1, 1, 0, 1)  # Amarillo para el seleccionado
+            self.sat_marker.set_data(positions, face_color=colors, size=5)
+
+    def on_mouse_click(self, event):
+        # Obtener la posición del mouse
+        if event.button == 1 and self.sat_positions is not None:
+            pos = event.pos
+            # Transformar a coordenadas de la escena
+            tr = self.canvas.scene.node_transform(self.view.scene)
+            trinverse = np.linalg.inv(tr)
+            p1 = trinverse.map([pos[0], pos[1], 0])[:3]
+            p2 = trinverse.map([pos[0], pos[1], 1])[:3]
+
+            # Calcular el rayo de selección
+            direction = p2 - p1
+            direction /= np.linalg.norm(direction)
+
+            # Buscar el satélite más cercano al rayo
+            min_dist = float('inf')
+            closest_index = None
+
+            for i, sat_pos in enumerate(self.sat_positions):
+                dist = np.linalg.norm(np.cross(direction, sat_pos - p1))
+                if dist < 500:  # Umbral de distancia para selección
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_index = i
+
+            if closest_index is not None:
+                self.selected_satellite = self.satellites[closest_index]
+                self.show_satellite_info(self.selected_satellite)
+                # Actualizar colores para reflejar la selección
+                colors = np.tile((1, 0, 0, 1), (len(self.satellites), 1))
+                colors[closest_index] = (1, 1, 0, 1)  # Amarillo para el seleccionado
+                self.sat_marker.set_data(self.sat_positions, face_color=colors, size=5)
+
+    def show_satellite_info(self, satellite):
+        # Mostrar información del satélite en una ventana emergente
+        info = f"Nombre: {satellite.name}\n"
+        info += f"Período orbital: {1 / satellite.model.no_kozai * 1440:.2f} minutos\n"
+        info += f"Inclinación: {satellite.model.inclo * (180 / np.pi):.2f} grados\n"
+        info += f"Eccentricidad: {satellite.model.ecco:.6f}\n"
+
+        QMessageBox.information(self, "Información del Satélite", info)
+
+    def search_satellite(self):
+        # Buscar satélite por nombre
+        search_text = self.search_input.text().lower()
+        for index in range(self.satellite_list.count()):
+            item = self.satellite_list.item(index)
+            item.setHidden(search_text not in item.text().lower())
+
+    def select_satellite_from_list(self, item):
+        # Seleccionar satélite desde la lista
+        sat_name = item.text()
+        for idx, sat in enumerate(self.satellites):
+            if sat.name == sat_name:
+                self.selected_satellite = sat
+                self.center_on_satellite(sat, idx)
+                break
+
+    def center_on_satellite(self, satellite, index):
+        # Centrar la cámara en el satélite seleccionado
+        if self.sat_positions is not None:
+            x, y, z = self.sat_positions[index]
+            self.view.camera.center = (x, y, z)
+            self.view.camera.distance = 10000  # Acercar la cámara
+            # Actualizar colores para reflejar la selección
+            colors = np.tile((1, 0, 0, 1), (len(self.satellites), 1))
+            colors[index] = (1, 1, 0, 1)  # Amarillo para el seleccionado
+            self.sat_marker.set_data(self.sat_positions, face_color=colors, size=5)
+
+    def closeEvent(self, event):
+        # Detener el hilo de actualización al cerrar la ventana
+        self.worker.stop()
+        self.worker.wait()
+        event.accept()
+
+if __name__ == '__main__':
+    appQt = QApplication(sys.argv)
+    window = OrbitalApp()
+    window.show()
+    sys.exit(appQt.exec())
