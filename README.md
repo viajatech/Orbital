@@ -25,5 +25,8 @@ Renderización Eficiente: Utiliza técnicas de renderización en GPU a través d
 Objetivo del script:
 Proporcionar una herramienta educativa e interactiva que permita a los usuarios explorar y entender las órbitas de los satélites alrededor de la Tierra. Es útil para estudiantes, entusiastas de la astronomía y profesionales que deseen visualizar y analizar datos orbitales de manera dinámica y accesible.
 
+Resumen:
+"Orbital by Viaja Tech" es una aplicación que combina cálculos astronómicos precisos con gráficos interactivos para ofrecer una experiencia inmersiva en la observación de satélites en órbita terrestre, facilitando tanto la visualización como la comprensión de sus trayectorias y características orbitales.
+
 -----
 
